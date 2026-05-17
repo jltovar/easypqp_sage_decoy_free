@@ -665,6 +665,8 @@ def generate(
             )
         )
 
+        aligned_runs = aligned_runs.reset_index(drop=True)
+
     else:  # in this case no rt_calibration is performed, we just scale the retention time
         aligned_runs = pepidr
         min_max_scaler = preprocessing.MinMaxScaler()
@@ -725,7 +727,9 @@ def generate(
             )
 
         # perform IM calibration
-        aligned_runs = aligned_runs.groupby("base_name", as_index=False).apply(
+        aligned_runs = aligned_runs.groupby(
+            "base_name", as_index=False, group_keys=False
+        ).apply(
             lambda x: lowess(
                 x,
                 im_reference_run,
@@ -739,10 +743,19 @@ def generate(
             )
         )
 
+        aligned_runs = aligned_runs.reset_index(drop=True)
+
     elif enable_im:  # if no calibration just transfer information as is
         aligned_runs["im"] = aligned_runs["ion_mobility"]
     else:
         pass
+
+    aligned_runs = aligned_runs.reset_index(drop=True)
+
+    if "base_name" not in aligned_runs.columns:
+        raise click.ClickException(
+            "Internal error: aligned_runs lost required column 'base_name' during RT/IM alignment."
+        )
 
     pepida = aligned_runs
 
