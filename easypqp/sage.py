@@ -192,6 +192,47 @@ class SagePSMParser:
             counts.append(len(accs))
 
         return pd.Series(acc_list), pd.Series(entry_list), pd.Series(counts)
+    
+    @staticmethod
+    def _is_decoy_free_result(df: pd.DataFrame) -> bool:
+        """
+        Detect Sage Decoy-Free output.
+
+        Decoy-Free output carries the final active error streams in:
+          decoy_free_pep
+          decoy_free_q_value
+          decoy_free_peptide_q
+          decoy_free_protein_q
+        """
+        return any(
+            c in df.columns
+            for c in [
+                "decoy_free_pep",
+                "decoy_free_q_value",
+                "decoy_free_peptide_q",
+                "decoy_free_protein_q",
+            ]
+        )
+
+    @staticmethod
+    def _bool_series(df: pd.DataFrame, col: str, default: bool = False) -> pd.Series:
+        """
+        Robustly parse boolean-like TSV/Parquet columns.
+        """
+        if col not in df.columns:
+            return pd.Series([default] * len(df), index=df.index)
+
+        s = df[col]
+
+        if s.dtype == bool:
+            return s.fillna(default)
+
+        return (
+            s.astype(str)
+            .str.strip()
+            .str.lower()
+            .isin(["true", "t", "1", "yes", "y"])
+        )
 
     def _annotate_unimod(self, pep: str) -> str:
         """
@@ -321,36 +362,81 @@ class SagePSMParser:
             proteins_raw
         )
 
+        is_decoy_free = self._is_decoy_free_result(df)
+
         if "label" in df.columns:
-            # decoy detection from label
-            # Sage TSV: label == -1 (decoy), +1 (target)
             label_series = pd.to_numeric(df["label"], errors="coerce")
             decoy = label_series == -1
         elif "is_decoy" in df.columns:
-            # The parquet format uses a boolean is_decoy column
-            decoy = df["is_decoy"]
+            decoy = self._bool_series(df, "is_decoy", default=False)
+        else:
+            decoy = pd.Series([False] * len(df), index=df.index)
 
-        # spectrum-level q-value, peptide-level q-value and protein-level q-value
-        pep = (
-            pd.to_numeric(df["posterior_error"], errors="coerce")
-            if "posterior_error" in df.columns
-            else pd.Series([np.nan] * len(df))
-        )
-        spectrum_q = (
-            pd.to_numeric(df["spectrum_q"], errors="coerce")
-            if "spectrum_q" in df.columns
-            else pd.Series([np.nan] * len(df))
-        )
-        peptide_q = (
-            pd.to_numeric(df["peptide_q"], errors="coerce")
-            if "peptide_q" in df.columns
-            else pd.Series([np.nan] * len(df))
-        )
-        protein_q = (
-            pd.to_numeric(df["protein_q"], errors="coerce")
-            if "protein_q" in df.columns
-            else pd.Series([np.nan] * len(df))
-        )
+        if is_decoy_free:
+            # Sage Decoy-Free output has no target-decoy competition stream.
+            # Treat accepted target rows as non-decoy and preserve the final DF
+            # error streams for downstream EasyPQP filtering.
+            pep = pd.to_numeric(df["decoy_free_pep"], errors="coerce")
+            spectrum_q = pd.to_numeric(df["decoy_free_q_value"], errors="coerce")
+            peptide_q = pd.to_numeric(df["decoy_free_peptide_q"], errors="coerce")
+            protein_q = pd.to_numeric(df["decoy_free_protein_q"], errors="coerce")
+
+            rank_series = (
+                pd.to_numeric(df["rank"], errors="coerce")
+                if "rank" in df.columns
+                else pd.Series([1] * len(df), index=df.index)
+            )
+
+            entrapment = self._bool_series(
+                df, "decoy_free_is_entrapment", default=False
+            )
+
+            keep = (
+                rank_series.eq(1)
+                & (~entrapment)
+                & spectrum_q.notna()
+                & peptide_q.notna()
+                & protein_q.notna()
+            )
+
+            df = df.loc[keep].copy()
+            run_id = run_id.loc[keep].reset_index(drop=True)
+            scan_id = scan_id.loc[keep].reset_index(drop=True)
+            hit_rank = hit_rank.loc[keep].reset_index(drop=True)
+            z = z.loc[keep].reset_index(drop=True)
+            rt = rt.loc[keep].reset_index(drop=True)
+            im = im.loc[keep].reset_index(drop=True)
+            pep_seq = pep_seq.loc[keep].reset_index(drop=True)
+            protein_ids = protein_ids.loc[keep].reset_index(drop=True)
+            gene_ids = gene_ids.loc[keep].reset_index(drop=True)
+            num_prot = num_prot.loc[keep].reset_index(drop=True)
+            decoy = pd.Series([False] * len(df))
+            pep = pep.loc[keep].reset_index(drop=True)
+            spectrum_q = spectrum_q.loc[keep].reset_index(drop=True)
+            peptide_q = peptide_q.loc[keep].reset_index(drop=True)
+            protein_q = protein_q.loc[keep].reset_index(drop=True)
+
+        else:
+            pep = (
+                pd.to_numeric(df["posterior_error"], errors="coerce")
+                if "posterior_error" in df.columns
+                else pd.Series([np.nan] * len(df))
+            )
+            spectrum_q = (
+                pd.to_numeric(df["spectrum_q"], errors="coerce")
+                if "spectrum_q" in df.columns
+                else pd.Series([np.nan] * len(df))
+            )
+            peptide_q = (
+                pd.to_numeric(df["peptide_q"], errors="coerce")
+                if "peptide_q" in df.columns
+                else pd.Series([np.nan] * len(df))
+            )
+            protein_q = (
+                pd.to_numeric(df["protein_q"], errors="coerce")
+                if "protein_q" in df.columns
+                else pd.Series([np.nan] * len(df))
+            )
 
         # compute precursor m/z from neurtal mass using the theoretical calculated mass of the peptide.
         calcmass = _get_first_existing(df, ["calcmass"], cast=float, default=np.nan)
@@ -476,34 +562,81 @@ class SagePSMParser:
             proteins_raw
         )
 
+        is_decoy_free = self._is_decoy_free_result(df)
+
         if "label" in df.columns:
             label_series = pd.to_numeric(df["label"], errors="coerce")
             decoy = label_series == -1
         elif "is_decoy" in df.columns:
-            decoy = df["is_decoy"]
+            decoy = self._bool_series(df, "is_decoy", default=False)
         else:
-            decoy = pd.Series([False] * len(df))
+            decoy = pd.Series([False] * len(df), index=df.index)
 
-        pep = (
-            pd.to_numeric(df["posterior_error"], errors="coerce")
-            if "posterior_error" in df.columns
-            else pd.Series([np.nan] * len(df))
-        )
-        spectrum_q = (
-            pd.to_numeric(df["spectrum_q"], errors="coerce")
-            if "spectrum_q" in df.columns
-            else pd.Series([np.nan] * len(df))
-        )
-        peptide_q = (
-            pd.to_numeric(df["peptide_q"], errors="coerce")
-            if "peptide_q" in df.columns
-            else pd.Series([np.nan] * len(df))
-        )
-        protein_q = (
-            pd.to_numeric(df["protein_q"], errors="coerce")
-            if "protein_q" in df.columns
-            else pd.Series([np.nan] * len(df))
-        )
+        if is_decoy_free:
+            pep = pd.to_numeric(df["decoy_free_pep"], errors="coerce")
+            spectrum_q = pd.to_numeric(df["decoy_free_q_value"], errors="coerce")
+            peptide_q = pd.to_numeric(df["decoy_free_peptide_q"], errors="coerce")
+            protein_q = pd.to_numeric(df["decoy_free_protein_q"], errors="coerce")
+
+            rank_series = (
+                pd.to_numeric(df["rank"], errors="coerce")
+                if "rank" in df.columns
+                else pd.Series([1] * len(df), index=df.index)
+            )
+
+            entrapment = self._bool_series(
+                df, "decoy_free_is_entrapment", default=False
+            )
+
+            keep = (
+                rank_series.eq(1)
+                & (~entrapment)
+                & spectrum_q.notna()
+                & peptide_q.notna()
+                & protein_q.notna()
+            )
+
+            if psm_id_series is not None:
+                psm_id_series = psm_id_series.loc[keep].reset_index(drop=True)
+
+            df = df.loc[keep].copy()
+            run_id = run_id.loc[keep].reset_index(drop=True)
+            scan_id = scan_id.loc[keep].reset_index(drop=True)
+            hit_rank = hit_rank.loc[keep].reset_index(drop=True)
+            z = z.loc[keep].reset_index(drop=True)
+            rt = rt.loc[keep].reset_index(drop=True)
+            im = im.loc[keep].reset_index(drop=True)
+            pep_seq = pep_seq.loc[keep].reset_index(drop=True)
+            protein_ids = protein_ids.loc[keep].reset_index(drop=True)
+            gene_ids = gene_ids.loc[keep].reset_index(drop=True)
+            num_prot = num_prot.loc[keep].reset_index(drop=True)
+            decoy = pd.Series([False] * len(df))
+            pep = pep.loc[keep].reset_index(drop=True)
+            spectrum_q = spectrum_q.loc[keep].reset_index(drop=True)
+            peptide_q = peptide_q.loc[keep].reset_index(drop=True)
+            protein_q = protein_q.loc[keep].reset_index(drop=True)
+
+        else:
+            pep = (
+                pd.to_numeric(df["posterior_error"], errors="coerce")
+                if "posterior_error" in df.columns
+                else pd.Series([np.nan] * len(df))
+            )
+            spectrum_q = (
+                pd.to_numeric(df["spectrum_q"], errors="coerce")
+                if "spectrum_q" in df.columns
+                else pd.Series([np.nan] * len(df))
+            )
+            peptide_q = (
+                pd.to_numeric(df["peptide_q"], errors="coerce")
+                if "peptide_q" in df.columns
+                else pd.Series([np.nan] * len(df))
+            )
+            protein_q = (
+                pd.to_numeric(df["protein_q"], errors="coerce")
+                if "protein_q" in df.columns
+                else pd.Series([np.nan] * len(df))
+            )
 
         calcmass = _get_first_existing(df, ["calcmass"], cast=float, default=np.nan)
         prec_mz = pd.Series(np.nan, index=df.index, dtype=float)

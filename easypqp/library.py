@@ -91,11 +91,14 @@ def peptide_fdr(psms, peptide_fdr_threshold, pi0_lambda, plot_path, nofdr):
     pfdr = False
 
     if nofdr:
+        q_col = "peptide_q" if "peptide_q" in psms.columns else "q_value"
+
         peptides = (
-            psms.groupby(["modified_peptide", "decoy", "q_value"])["pp"]
-            .max()
+            psms.groupby(["modified_peptide", "decoy"], dropna=False)
+            .agg(pp=("pp", "max"), q_value=(q_col, "min"))
             .reset_index()
         )
+
         targets = peptides[~peptides["decoy"]].copy()
         decoys = peptides[peptides["decoy"]].copy()
 
@@ -119,9 +122,12 @@ def peptide_fdr(psms, peptide_fdr_threshold, pi0_lambda, plot_path, nofdr):
 
         plot(plot_path, "global peptide scores", targets["pp"], decoys["pp"])
 
-    return targets[targets["q_value"] < peptide_fdr_threshold][
-        "modified_peptide"
-    ], np.min(targets[targets["q_value"] < peptide_fdr_threshold]["pp"])
+    passing = targets[targets["q_value"] < peptide_fdr_threshold]
+
+    if passing.empty:
+        return passing["modified_peptide"], np.nan
+
+    return passing["modified_peptide"], np.min(passing["pp"])
 
 
 def protein_fdr(psms, protein_fdr_threshold, pi0_lambda, plot_path, nofdr):
@@ -131,9 +137,14 @@ def protein_fdr(psms, protein_fdr_threshold, pi0_lambda, plot_path, nofdr):
     pfdr = False
 
     if nofdr:
+        q_col = "protein_q" if "protein_q" in psms.columns else "q_value"
+
         proteins = (
-            psms.groupby(["protein_id", "decoy", "q_value"])["pp"].max().reset_index()
+            psms.groupby(["protein_id", "decoy"], dropna=False)
+            .agg(pp=("pp", "max"), q_value=(q_col, "min"))
+            .reset_index()
         )
+
         targets = proteins[~proteins["decoy"]].copy()
         decoys = proteins[proteins["decoy"]].copy()
 
@@ -157,9 +168,12 @@ def protein_fdr(psms, protein_fdr_threshold, pi0_lambda, plot_path, nofdr):
 
         plot(plot_path, "global protein scores", targets["pp"], decoys["pp"])
 
-    return targets[targets["q_value"] < protein_fdr_threshold]["protein_id"], np.min(
-        targets[targets["q_value"] < protein_fdr_threshold]["pp"]
-    )
+    passing = targets[targets["q_value"] < protein_fdr_threshold]
+
+    if passing.empty:
+        return passing["protein_id"], np.nan
+
+    return passing["protein_id"], np.min(passing["pp"])
 
 
 def process_psms(
@@ -262,8 +276,14 @@ def process_psms(
             psms.drop(columns="protein_id"), proteinset_canonical, on="peptide_sequence"
         )
 
-        # Prepare PeptideProphet / iProphet results
+        # Prepare PeptideProphet / iProphet results.
+        # In --nofdr mode, q_value must already be supplied by the search engine.
+        # For Sage Decoy-Free output this is decoy_free_q_value mapped by sage.py.
         if "q_value" not in psms.columns:
+            if nofdr:
+                raise click.ClickException(
+                    "Error: --nofdr was requested, but input PSMs do not contain q_value."
+                )
             psms["q_value"] = compute_model_fdr(psms["pep"].values)
 
         # Confident peptides and protein in global context

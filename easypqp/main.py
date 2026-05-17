@@ -830,6 +830,12 @@ def library(
     INFILES: Input PSM and Peak pickle files generated from an `easypqp convert[psm|sage]` command.
     """
 
+    if nofdr:
+        timestamped_echo(
+            "Info: --nofdr enabled; EasyPQP will use q-values supplied by the input files "
+            "and will not recompute target-decoy FDR."
+        )
+    
     start_time = time.time()
     generate(
         infiles,
