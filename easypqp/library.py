@@ -648,21 +648,32 @@ def generate(
                 rt_reference_run_path, sep="\t", index=False
             )
 
-        # Normalize RT of all runs against reference
-        aligned_runs = aligned_runs.groupby(
-            "base_name", as_index=False, group_keys=False
-        ).apply(
-            lambda x: lowess(
-                x,
+        # Normalize RT of all runs against reference.
+        # Avoid groupby().apply() here because newer pandas versions can return
+        # grouped results with base_name moved out of the normal columns.
+        aligned_chunks = []
+
+        for base_name, run_df in aligned_runs.groupby("base_name", sort=False):
+            aligned_run = lowess(
+                run_df.copy(),
                 rt_reference_run,
                 "retention_time",
                 "irt",
                 rt_lowess_frac,
                 rt_psm_fdr_threshold,
                 min_peptides,
-                "easypqp_rt_alignment_" + x.name,
+                "easypqp_rt_alignment_" + str(base_name),
                 main_path,
             )
+
+            if aligned_run is not None and not aligned_run.empty:
+                aligned_run["base_name"] = base_name
+                aligned_chunks.append(aligned_run)
+
+        aligned_runs = (
+            pd.concat(aligned_chunks, ignore_index=True)
+            if aligned_chunks
+            else pd.DataFrame(columns=pepidr.columns.tolist() + ["irt"])
         )
 
         aligned_runs = aligned_runs.reset_index(drop=True)
@@ -674,11 +685,17 @@ def generate(
             min_max_scaler.fit_transform(aligned_runs[["retention_time"]]) * 100
         )
 
-    # Determine if IM is present in the search data
-    if pepidr["ion_mobility"].isnull().all():
+    # Determine if IM is present in the search data.
+    # Treat NaN, non-finite, and zero/negative mobility values as absent.
+    if "ion_mobility" not in pepidr.columns:
         enable_im = False
     else:
-        enable_im = True
+        im_values = pd.to_numeric(pepidr["ion_mobility"], errors="coerce")
+        enable_im = np.isfinite(im_values).any() and (im_values > 0).any()
+
+    timestamped_echo(
+        "Info: Ion mobility detected: %s." % ("yes" if enable_im else "no")
+    )
 
     if perform_im_calibration and enable_im:
         # Prepare reference IM list
@@ -726,24 +743,32 @@ def generate(
                 im_reference_run_path, sep="\t", index=False
             )
 
-        # perform IM calibration
-        aligned_runs = aligned_runs.groupby(
-            "base_name", as_index=False, group_keys=False
-        ).apply(
-            lambda x: lowess(
-                x,
+        # Perform IM calibration.
+        # Avoid groupby().apply() because pandas can move base_name out of columns.
+        aligned_chunks = []
+
+        for base_name, run_df in aligned_runs.groupby("base_name", sort=False):
+            aligned_run = lowess(
+                run_df.copy(),
                 im_reference_run,
                 "ion_mobility",
                 "im",
                 im_lowess_frac,
                 im_psm_fdr_threshold,
                 min_peptides,
-                "easypqp_im_alignment_" + x.name,
+                "easypqp_im_alignment_" + str(base_name),
                 main_path,
             )
-        )
 
-        aligned_runs = aligned_runs.reset_index(drop=True)
+            if aligned_run is not None and not aligned_run.empty:
+                aligned_run["base_name"] = base_name
+                aligned_chunks.append(aligned_run)
+
+        aligned_runs = (
+            pd.concat(aligned_chunks, ignore_index=True)
+            if aligned_chunks
+            else pd.DataFrame(columns=aligned_runs.columns.tolist() + ["im"])
+        )
 
     elif enable_im:  # if no calibration just transfer information as is
         aligned_runs["im"] = aligned_runs["ion_mobility"]
@@ -753,8 +778,15 @@ def generate(
     aligned_runs = aligned_runs.reset_index(drop=True)
 
     if "base_name" not in aligned_runs.columns:
+        if aligned_runs.index.name == "base_name":
+            aligned_runs = aligned_runs.reset_index()
+        elif "level_0" in aligned_runs.columns:
+            aligned_runs = aligned_runs.rename(columns={"level_0": "base_name"})
+
+    if "base_name" not in aligned_runs.columns:
         raise click.ClickException(
-            "Internal error: aligned_runs lost required column 'base_name' during RT/IM alignment."
+            "Internal error: aligned_runs lost required column 'base_name' during RT/IM alignment. "
+            f"Available columns: {list(aligned_runs.columns)}"
         )
 
     pepida = aligned_runs
