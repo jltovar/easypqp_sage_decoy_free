@@ -541,14 +541,6 @@ def convertpsm(
     help="Directory where Sage-converted .psmpkl and .peakpkl files will be written.",
 )
 @click.option(
-    "--outdir",
-    "outdir",
-    required=False,
-    default=".",
-    type=click.Path(file_okay=False, dir_okay=True, writable=True),
-    help="Directory where .psmpkl and .peakpkl files will be written.",
-)
-@click.option(
     "--unimod",
     "unimodfile",
     required=False,
