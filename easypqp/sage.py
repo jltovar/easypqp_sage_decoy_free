@@ -879,10 +879,13 @@ def convert_sage(
     *,
     force_streaming: Optional[bool] = None,
     streaming_threshold_bytes: int = 1_000_000_000,
+    outdir: str = ".",
 ) -> Optional[List[str]]:
     """
     High-level conversion: Sage TSV/Parquet to EasyPQP PSM and peaks pickles written to disk.
     """
+    os.makedirs(outdir, exist_ok=True)
+
     # Auto-switch to streaming mode when inputs are very large, unless caller
     # explicitly requested non-streaming via force_streaming=False.
     try:
@@ -910,6 +913,7 @@ def convert_sage(
             unimod_xml,
             max_delta_unimod=max_delta_unimod,
             mz_precision_digits=mz_precision_digits,
+            outdir=outdir,
         )
 
     # Read raw to extract psm_id for joining
@@ -975,8 +979,8 @@ def convert_sage(
             )
             continue
 
-        psmpkl = f"{run}.psmpkl"
-        peakpkl = f"{run}.peakpkl"
+        psmpkl = os.path.join(outdir, f"{run}.psmpkl")
+        peakpkl = os.path.join(outdir, f"{run}.peakpkl")
         psms_r.to_pickle(psmpkl)
         peaks_r.to_pickle(peakpkl)
         timestamped_echo(f"Info: Wrote {psmpkl} and {peakpkl}")
@@ -985,6 +989,8 @@ def convert_sage(
     if len(new_infiles) == 0:
         # click may not be available in all contexts; raise a generic error here
         raise RuntimeError("No non-empty runs detected after Sage conversion.")
+
+    return new_infiles
 
 
 def convert_sage_streaming(
@@ -995,6 +1001,7 @@ def convert_sage_streaming(
     mz_precision_digits: int = 6,
     chunksize: int = 800_000,
     tmpdir: Optional[str] = None,
+    outdir: str = ".",
 ) -> List[str]:
     """
     Memory-efficient streaming conversion that processes one run at a time.
@@ -1007,6 +1014,8 @@ def convert_sage_streaming(
     This is logically equivalent to the non-streaming convert_sage().
     """
     import tempfile
+
+    os.makedirs(outdir, exist_ok=True)
 
     # --- 1) Load all PSMs once (as in non-streaming convert_sage) ---
     timestamped_echo("Info: [streaming] Reading Sage PSMs (full table in memory)")
@@ -1270,8 +1279,8 @@ def convert_sage_streaming(
             )
             continue
 
-        psmpkl = f"{run}.psmpkl"
-        peakpkl = f"{run}.peakpkl"
+        psmpkl = os.path.join(outdir, f"{run}.psmpkl")
+        peakpkl = os.path.join(outdir, f"{run}.peakpkl")
         psms_export.to_pickle(psmpkl)
         peaks_run.to_pickle(peakpkl)
 

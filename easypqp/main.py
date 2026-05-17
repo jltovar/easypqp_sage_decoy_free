@@ -533,6 +533,22 @@ def convertpsm(
     help="Path to Sage matched_fragments.sage.tsv/parquet.",
 )
 @click.option(
+    "--outdir",
+    "outdir",
+    required=False,
+    default=".",
+    type=click.Path(file_okay=False, dir_okay=True, writable=True),
+    help="Directory where Sage-converted .psmpkl and .peakpkl files will be written.",
+)
+@click.option(
+    "--outdir",
+    "outdir",
+    required=False,
+    default=".",
+    type=click.Path(file_okay=False, dir_okay=True, writable=True),
+    help="Directory where .psmpkl and .peakpkl files will be written.",
+)
+@click.option(
     "--unimod",
     "unimodfile",
     required=False,
@@ -571,6 +587,7 @@ def convertpsm(
 def convertsage(
     sage_psm,
     sage_fragments,
+    outdir,
     unimodfile,
     max_delta_unimod,
     precision_digits,
@@ -596,6 +613,7 @@ def convertsage(
         precision_digits,
         force_streaming=force_streaming,
         streaming_threshold_bytes=streaming_threshold_bytes,
+        outdir=outdir,
     )
     timestamped_echo(
         "Info: Total elapsed time %.2f minutes." % ((time.time() - start_time) / 60.0)
